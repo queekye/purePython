@@ -2,9 +2,9 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from numpy import *
 
-MAX_PEAK = 20
+MAX_PEAK = 10
 MIN_PEAK = 3
-MAX_VALLEY = 10
+MAX_VALLEY = 5
 
 
 def gauss_fcn(mu, sigma, x, y):
@@ -22,12 +22,11 @@ def gauss_diff(mu, sigma, x, y):
 
 
 class TerrainMap:
-    def __init__(self, sd, map_dim, global_pixel_meter, local_pixel_meter):
+    def __init__(self, sd, map_dim, global_pixel_meter):
         # TerrianMap 构建高度图的对象
         random.seed(sd)
         self.map_dim = map_dim
         self.global_pixel_meter = global_pixel_meter
-        self.local_pixel_meter = local_pixel_meter
         self.num_peak = random.randint(MIN_PEAK, MAX_PEAK)
         self.num_valley = random.randint(0, MAX_VALLEY)
         side = map_dim * global_pixel_meter
@@ -78,38 +77,11 @@ class TerrainMap:
     def get_local_map(self, loc):
         side = self.side
         gpm = self.global_pixel_meter
-        lpm = self.local_pixel_meter
-        g_dim = self.map_dim*self.local_pixel_meter/self.global_pixel_meter
-        ld_index = asarray((loc + side/2)/gpm, dtype=int) - (g_dim-1)/2
-        left = ld_index[0]*gpm + lpm/2
-        down = ld_index[1]*gpm + lpm/2
-        right = left + self.map_dim * lpm
-        up = down + self.map_dim * lpm
-        u = arange(left, right, lpm) - side / 2
-        v = arange(down, up, lpm) - side / 2
-        [U, V] = meshgrid(u, v)
-        return self.get_high(U, V)
-
-    def plot_local(self, loc):
-        fig = plt.figure()
-        ax = Axes3D(fig)
-
-        side = self.side
-        gpm = self.global_pixel_meter
-        lpm = self.local_pixel_meter
-        g_dim = self.map_dim * self.local_pixel_meter / self.global_pixel_meter
-        ld_index = asarray((loc + side / 2) / gpm, dtype=int) - (g_dim - 1) / 2
-        left = ld_index[0] * gpm + lpm / 2
-        down = ld_index[1] * gpm + lpm / 2
-        right = left + self.map_dim * lpm
-        up = down + self.map_dim * lpm
-        u = arange(left, right, lpm) - side / 2
-        v = arange(down, up, lpm) - side / 2
-        [U, V] = meshgrid(u, v)
-        Z = self.get_high(U, V)
-
-        ax.plot_surface(U, V, Z, rstride=1, cstride=1, cmap=plt.get_cmap('rainbow'))
-        plt.show()
+        index = asarray((loc + side / 2) / gpm, dtype=int)
+        loc_m = zeros([self.map_dim, self.map_dim])
+        if (index >= 0).all():
+            loc_m[index[0], index[1]] = 1
+        return loc_m
 
     def plot(self):
         fig = plt.figure()
@@ -126,11 +98,12 @@ class TerrainMap:
 
 if __name__ == '__main__':
     sed = random.randint(1, 10000)
-    m = TerrainMap(sed, 27, 9, 1)
+    m = TerrainMap(sed, 27, 9)
     m.plot()
     print(m.map_matrix)
     print(m.get_normal(30, 40))
     print(m.get_normal(array([1, 2, 3]), array([2, 4, 6])))
     loc1 = array([-33, 21.4])
     print(m.get_local_map(loc1))
-    m.plot_local(loc1)
+    for i in range(10000):
+        a = m.get_high(28, -33)

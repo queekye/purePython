@@ -16,7 +16,7 @@ import numpy as np
 import time
 from env_plan2 import Env
 from ou_noise import OUNoise
-from TerrainMap import TerrainMap
+from MoonMap import MoonMap
 from replay_buffer import ReplayBuffer
 
 #####################  hyper parameters  ####################
@@ -34,8 +34,8 @@ BATCH_SIZE = 32
 RENDER = False
 ENV_NAME = 'Pendulum-v0'
 
-MAP_DIM = 27
-GLOBAL_PIXEL_METER = 9
+MAP_DIM = 32
+GLOBAL_PIXEL_METER = 4
 LOCAL_PIXEL_METER = 1
 SIDE = MAP_DIM*GLOBAL_PIXEL_METER
 CUT_RATE = MAP_DIM*LOCAL_PIXEL_METER/GLOBAL_PIXEL_METER
@@ -96,7 +96,7 @@ class DDPG(object):
         blm_ = np.zeros([BATCH_SIZE, self.m_dim, self.m_dim, 1])
         for batch in range(BATCH_SIZE):
             sd1 = bm_sd[batch]
-            terrian_map = TerrainMap(sd1, MAP_DIM, GLOBAL_PIXEL_METER, LOCAL_PIXEL_METER)
+            terrian_map = MoonMap(sd1, MAP_DIM, GLOBAL_PIXEL_METER)
             bgm[batch, :, :, 0] = terrian_map.map_matrix
             blm[batch, :, :, 0] = terrian_map.get_local_map(bs[batch, 0:2])
             blm_[batch, :, :, 0] = terrian_map.get_local_map(bs_[batch, 0:2])
@@ -104,27 +104,26 @@ class DDPG(object):
         self.sess.run(self.atrain, {self.S: bs, self.GM: bgm, self.LM: blm})
         self.sess.run(self.ctrain, {self.S: bs, self.a: ba, self.R: br, self.S_: bs_, self.LM_: blm_})
 
-    def _build_a(self, s, gm, lm, reuse=None, custom_getter=None):
+    def _build_a(self, s, gm, locm, reuse=None, custom_getter=None):
+
+        def _conv2d_keep_size(x, y, kernel_size, name, use_bias=False, reuse_conv=None, trainable_conv=True):
+            return tf.layers.conv2d(inputs=x,
+                                    filters=y,
+                                    kernel_size=kernel_size,
+                                    padding="same",
+                                    use_bias=use_bias,
+                                    kernel_initializer=tf.truncated_normal_initializer(stddev=0.01),
+                                    bias_initializer=tf.truncated_normal_initializer(stddev=0.01),
+                                    reuse=reuse_conv,
+                                    name=name,
+                                    trainable=trainable_conv)
 
         def _build_vin(mat, name, trainable_vin):
-
-            def _conv2d_keep_size(x, y, kernel_size, name, use_bias=False, reuse_conv=None, trainable_conv=True):
-                return tf.layers.conv2d(inputs=x,
-                                        filters=y,
-                                        kernel_size=kernel_size,
-                                        padding="same",
-                                        use_bias=use_bias,
-                                        kernel_initializer=tf.truncated_normal_initializer(stddev=0.01),
-                                        bias_initializer=tf.truncated_normal_initializer(stddev=0.01),
-                                        reuse=reuse_conv,
-                                        name=name,
-                                        trainable=trainable_conv)
-
             h1 = _conv2d_keep_size(mat, 150, 3, name+"_h1", use_bias=True, trainable_conv=trainable_vin)
             r = _conv2d_keep_size(h1, 1, 1, name+"_r", trainable_conv=trainable_vin)
             q0 = _conv2d_keep_size(r, 10, 3, name+"_q0", trainable_conv=trainable_vin)
             v = tf.reduce_max(q0, axis=3, keep_dims=True, name=name+"_v")
-            for k in range(36):
+            for k in range(40):
                 rv = tf.concat([r, v], axis=3)
                 q = _conv2d_keep_size(rv, 10, 3, name+"_q", reuse_conv=tf.AUTO_REUSE, trainable_conv=trainable_vin)
                 v = tf.reduce_max(q, axis=3, keep_dims=True, name=name+"_v")
@@ -133,11 +132,8 @@ class DDPG(object):
         trainable = True if reuse is None else False
         with tf.variable_scope('Actor', reuse=reuse, custom_getter=custom_getter):
             gv = _build_vin(gm, name="global_map_vin", trainable_vin=trainable)
-            index_g = tf.cast((s[:, 0:2] + 1) * MAP_DIM / 2, dtype=tf.int32)
-            lg = tf.zeros(tf.shape(gv))
-            lg[:, index_g[:, 0], index_g[:, 1], :] = tf.constant(1)
-            lmgv = tf.concat([gv, lg, lm], 3)
-            lv = _build_vin(lmgv, name="local_map_vin", trainable_vin=trainable)
+            loc_co = _conv2d_keep_size(locm, 1, 11, name="local_co", use_bias=False, trainable_conv=trainable)
+            lv = tf.multiply(gv, loc_co)
             m_flat = tf.reshape(lv, [-1, self.m_dim ** 2])
             att = tf.layers.dense(m_flat, self.att_dim, name='att_l1', trainable=trainable)
             layer_1 = tf.layers.dense(s, 300, activation=tf.nn.relu, name='l1', trainable=trainable)
@@ -148,15 +144,15 @@ class DDPG(object):
             a = tf.layers.dense(layer_3, self.a_dim, activation=tf.nn.tanh, name='a', trainable=trainable)
             return tf.multiply(a, self.a_bound, name='scaled_a')
 
-    def _build_c(self, s, gm, lm, a, reuse=None, custom_getter=None):
+    def _build_c(self, s, gm, locm, a, reuse=None, custom_getter=None):
         trainable = True if reuse is None else False
         with tf.variable_scope('Critic', reuse=reuse, custom_getter=custom_getter):
             gm_flat = tf.reshape(gm, [-1, self.m_dim**2])
-            layer_gm = tf.layers.dense(gm_flat, 16, activation=tf.nn.relu, name='lgm', trainable=trainable)
-            lm_flat = tf.reshape(lm, [-1, self.m_dim ** 2])
-            layer_lm = tf.layers.dense(lm_flat, 16, activation=tf.nn.relu, name='llm', trainable=trainable)
+            layer_gm = tf.layers.dense(gm_flat, self.s_dim, activation=tf.nn.relu, name='lgm', trainable=trainable)
+            lm_flat = tf.reshape(locm, [-1, self.m_dim ** 2])
+            layer_lm = tf.layers.dense(lm_flat, self.s_dim, activation=tf.nn.relu, name='llm', trainable=trainable)
             s_all = tf.concat([layer_gm, layer_lm, s], axis=0)
-            layer_1 = tf.layers.dense(s, 300, activation=tf.nn.relu, name='l1', trainable=trainable)
+            layer_1 = tf.layers.dense(s_all, 300, activation=tf.nn.relu, name='l1', trainable=trainable)
             layer_2s = tf.layers.dense(layer_1, 600, activation=None, name='l2s', trainable=trainable)
             layer_2a = tf.layers.dense(a, 600, activation=None, name='l2a', trainable=trainable)
             layer_2 = tf.add(layer_2s, layer_2a, name="l2")
@@ -173,7 +169,7 @@ a_dim1 = env.a_dim
 a_bound1 = env.a_bound
 
 ddpg = DDPG(a_dim1, s_dim1, a_bound1, MAP_DIM, att_dim=32)
-exploration_noise = OUNoise(a_dim1.sum())  # control exploration
+exploration_noise = OUNoise(a_dim1)  # control exploration
 t1 = time.time()
 replay_num = 0
 for i in range(MAX_EPISODES):

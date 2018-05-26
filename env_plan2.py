@@ -1,5 +1,5 @@
 from numpy import *
-from TerrainMap import TerrainMap
+from MoonMap import MoonMap
 
 # 任务介绍：
 # 小行星探测器在小行星上跳跃行走，目标点始终设定为原点。
@@ -14,8 +14,8 @@ ACTION_DIM = 3
 STATE_DIM = 16
 
 # 地图参数
-MAP_DIM = 27
-GLOBAL_PIXEL_METER = 9
+MAP_DIM = 32
+GLOBAL_PIXEL_METER = 4
 LOCAL_PIXEL_METER = 1
 
 # 小行星与探测器的相关参数
@@ -41,8 +41,8 @@ vertex_b = array([[lx, lx, lx, lx, -lx, -lx, -lx, -lx],
                   [-ly, -ly, ly, ly, -ly, -ly, ly, ly],
                   [-lz, lz, lz, -lz, -lz, lz, lz, -lz]])
 MIN_ENERGY = 0.001
-MAX_VXY = 0.8
-MAX_VZ = 0.3
+MAX_VXY = 1.5
+MAX_VZ = 0.2
 
 # RK4算法参数
 STEP_LENGTH = 0.001
@@ -172,7 +172,7 @@ class Env:
         self.t0 = 0
         self.state = array([0, 0, 5, 0.12, -0.08, 0, 1, 0, 0, 0, 0.2, -0.1, 0.15, -1.9, 1.5, -1.2])
         self.state0 = self.state.copy()
-        self.terrain_map = TerrainMap(3, MAP_DIM, GLOBAL_PIXEL_METER, LOCAL_PIXEL_METER)
+        self.terrain_map = MoonMap(3, MAP_DIM, GLOBAL_PIXEL_METER)
         self.map_seed = 3
         self.r_obj = MAP_DIM * GLOBAL_PIXEL_METER / 3
 
@@ -182,7 +182,7 @@ class Env:
     # 生成地图
     def set_map_seed(self, sd=1):
         self.map_seed = sd
-        self.terrain_map = TerrainMap(sd, MAP_DIM, GLOBAL_PIXEL_METER, LOCAL_PIXEL_METER)
+        self.terrain_map = MoonMap(sd, MAP_DIM, GLOBAL_PIXEL_METER)
 
     # check:
     # 设定初始状态，即探测器与地面的撞前状态
@@ -192,12 +192,12 @@ class Env:
         minXY = self.r_obj + 3 * GLOBAL_PIXEL_METER
         maxXY = MAP_DIM * GLOBAL_PIXEL_METER / 2 - 3 * GLOBAL_PIXEL_METER
         minVxy = 0.05
-        maxVxy = 0.1
+        maxVxy = 0.2
         XY_theta = random.random() * 2 * pi
         XY = ((maxXY - minXY) * random.random() + minXY) * array([cos(XY_theta), sin(XY_theta)])
         v_theta = random.random() * 2 * pi
         v_xy = ((maxVxy - minVxy) * random.random() + minVxy) * array([cos(v_theta), sin(v_theta)])
-        vz = 0.05 * random.random() + 0.03
+        vz = 0.07 * random.random() + 0.03
         q = random.rand(4)
         q /= linalg.norm(q)
         w = random.rand(3) - 0.5
@@ -227,7 +227,7 @@ class Env:
         if loss_energy <= 0:
             raise Exception("Energy improved!")
         stop_bool = self.energy() < MIN_ENERGY
-        over_map = (abs(self.state[0:2]) > (MAP_DIM * GLOBAL_PIXEL_METER / 2 - GLOBAL_PIXEL_METER)).any()
+        over_map = (abs(self.state[0:2]) > (MAP_DIM * GLOBAL_PIXEL_METER - GLOBAL_PIXEL_METER)).any()
         over_speed = linalg.norm(self.state[3:5]) > MAX_VXY or linalg.norm(self.state[5]) > MAX_VZ
         done_bool = (abs(self.state[0:2]) < self.r_obj/2).all()
         reward_value = self.reward(done_bool, stop_bool, state0, t0, over_speed, over_map)
@@ -296,19 +296,27 @@ class Env:
         o_s[10:13] /= 2
         return o_s
 
-    def reward(self, done_bool, stop_bool, pre_state, t0, over_speed, over_map):
+    def reward(self, done_bool, stop_bool, pre_state, pre_t, over_speed, over_map):
+        def _cos_vec(a, b):
+            f = dot(a, b) / (linalg.norm(a) * linalg.norm(b))
+            return f
+
         if done_bool:
             reward_value = 10
         elif over_map:
-            reward_value = -5
+            reward_value = -3
         elif stop_bool:
-            reward_value = 0.1 * (linalg.norm(self.state0[0:2]) - linalg.norm(self.state[0:2])) / \
+            reward_value = (linalg.norm(self.state0[0:2]) - linalg.norm(self.state[0:2])) / \
                            max(linalg.norm(self.state0[0:2]), linalg.norm(self.state[0:2]))
         elif over_speed:
-            reward_value = -3
+            reward_value = -2
         else:
-            reward_value = 1000 * (linalg.norm(pre_state[0:2]) - linalg.norm(self.state[0:2])) - 1 * (self.t - t0)
-            reward_value *= 0.00001
+            d = (linalg.norm(pre_state[0:2]) - linalg.norm(self.state[0:2])) / \
+                max(linalg.norm(pre_state[0:2]), linalg.norm(self.state[0:2]))
+            c_pre = _cos_vec(-pre_state[0:2], pre_state[3:5])
+            c = _cos_vec(-self.state[0:2], self.state[3:5])
+            v_xy = linalg.norm(self.state[3:5])
+            reward_value = (c - c_pre) + (v_xy*c - v_xy*sqrt(1-c**2)) + d - 0.0001 * (self.t - pre_t)
         return reward_value
 
     def energy(self):
@@ -322,13 +330,20 @@ if __name__ == '__main__':
     env.cut_r_obj()
     env.cut_r_obj()
     for i in range(10):
+        ep_reward = 0
+        ave_dw = 0
+        r = 0
+        step = 0
         sed = random.randint(1, 10000)
         env.set_map_seed(sed)
         env.set_state_seed(sed)
         for step in range(200):
             action = random.rand(3)*env.a_bound*2 - env.a_bound
+            ave_dw += linalg.norm(action)
             next_s, lm, r, done = env.step(action)
-            print(next_s, r, done)
+            ep_reward += r
+            print(r, done)
             if done:
                 break
-    # env.test_ZeroMap()
+        print("episode: %10d   ep_reward:%10.5f   last_reward:%10.5f  ave_w:%10.5f" % (
+            i, ep_reward, r, ave_dw / (step + 1)))

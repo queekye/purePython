@@ -87,6 +87,18 @@ class ActorNetwork:
 
         return state_input, action_output, target_update, is_training
 
+    def _conv2d_keep_size(self, x, y, kernel_size, name, use_bias=False, reuse_conv=None, trainable_conv=True):
+        return tf.layers.conv2d(inputs=x,
+                                filters=y,
+                                kernel_size=kernel_size,
+                                padding="same",
+                                use_bias=use_bias,
+                                kernel_initializer=tf.truncated_normal_initializer(stddev=0.01),
+                                bias_initializer=tf.truncated_normal_initializer(stddev=0.01),
+                                reuse=reuse_conv,
+                                name=name,
+                                trainable=trainable_conv)
+
     def update_target(self):
         self.sess.run(self.target_update)
 

@@ -92,28 +92,29 @@ def vertex(terrain_map, state):
 def dynamic(terrain_map, state, flag=ones([8]) < 0, v0=zeros(8), normal=ones([3, 8])):
     XYZc, v, q, w, w_wheel = state[0:3], state[3:6], state[6:10], state[10:13], state[13:16]
     q /= sqrt(q.dot(q))
-    d_w_wheel = array([0, 0, 0])
+    M_wheel = zeros(3)
+    d_w_wheel = UJ_inv.dot(M_wheel)
     F = zeros([3, 8])
     T = zeros([3, 8])
     DCM = q_to_DCM(q)
     vertex_s, vertex_high, vertex_v = vertex(terrain_map, state)
     Teq = cross(w, I_star.dot(w) + U.dot(J_wheel).dot(w_wheel)) + U.dot(J_wheel).dot(d_w_wheel)
-    for i in range(0, 8):
-        if flag[i]:
-            r_one = vertex_b[:, i]
-            high = vertex_high[i]
-            normal_one = normal[:, i]
+    for j in range(0, 8):
+        if flag[j] and vertex_high[j] <= 0:
+            r_one = vertex_b[:, j]
+            high = vertex_high[j]
+            normal_one = normal[:, j]
             invade_s = -dot(array([0, 0, high]), normal_one)
-            if invade_s < 0:
-                continue
-            vertex_v_one = vertex_v[:, i]
+            vertex_v_one = vertex_v[:, j]
             invade_v = -dot(vertex_v_one, normal_one)
             vt = vertex_v_one - dot(vertex_v_one, normal_one) * normal_one
             vt_value = sqrt(dot(vt, vt))
-            if abs(v0[i]) < 0.00001:
-                v0[i] = 0.00001*sign(v0[i])
-            c = 0.75 * (1 - recovery_co ** 2) * k * (invade_s ** 1.5) / v0[i]
+            if abs(v0[j]) < 0.00001:
+                v0[j] = 0.00001 * sign(v0[j])
+            c = 0.75 * (1 - recovery_co ** 2) * k * (invade_s ** 1.5) / v0[j]
             Fn_value = k * (invade_s ** 1.5) + c * invade_v
+            if Fn_value < 1e-8:
+                Fn_value = 1e-8
             Fn = Fn_value * normal_one
             if vt_value >= 0.0006:
                 Ft = -mu * Fn_value * vt / vt_value
@@ -128,8 +129,8 @@ def dynamic(terrain_map, state, flag=ones([8]) < 0, v0=zeros(8), normal=ones([3,
                 Ft_value = sqrt(Ft.dot(Ft))
                 if Ft_value >= mu0 * Fn_value:
                     Ft = mu0 * Fn_value * Ft / Ft_value
-            F[:, i] = Ft + Fn
-            T[:, i] = cross(r_one, DCM.dot(Ft + Fn))
+            F[:, j] = Ft + Fn
+            T[:, j] = cross(r_one, DCM.dot(Ft + Fn))
     F = sum(F, 1) + m * g
     T = sum(T, 1)
     M_star = T - Teq
@@ -144,10 +145,10 @@ def dynamic(terrain_map, state, flag=ones([8]) < 0, v0=zeros(8), normal=ones([3,
 # check:OK
 def RK4(terrain_map, t, state, step_length, flag=ones([8]) < 0, v0=zeros(8), normal=ones([3, 8])):
     h = step_length
-    k1 = dynamic(terrain_map, state, flag, v0, normal)
-    k2 = dynamic(terrain_map, state + h * k1 / 2, flag, v0, normal)
-    k3 = dynamic(terrain_map, state + h * k2 / 2, flag, v0, normal)
-    k4 = dynamic(terrain_map, state + h * k3, flag, v0, normal)
+    k1 = dynamic(terrain_map, state, flag.copy(), v0.copy(), normal.copy())
+    k2 = dynamic(terrain_map, state + h * k1 / 2, flag.copy(), v0.copy(), normal.copy())
+    k3 = dynamic(terrain_map, state + h * k2 / 2, flag.copy(), v0.copy(), normal.copy())
+    k4 = dynamic(terrain_map, state + h * k3, flag.copy(), v0.copy(), normal.copy())
     state += h * (k1 + 2 * k2 + 2 * k3 + k4) / 6
     state[6:10] /= linalg.norm(state[6:10])
     t += h
@@ -163,8 +164,15 @@ class Env:
         self.t = 0
         self.observe_t = 0
         self.state = array([0, 0, 5, 0.12, -0.08, 0, 1, 0, 0, 0, 0.2, -0.1, 0.15, -1.9, 1.5, -1.2])
-        self.observe_state = self.state.copy()
+        self.state0 = self.state.copy()
         self.terrain_map = TerrainMap(3, MAP_DIM, PIXEL_METER)
+
+    def baoluo(self, x0, y0):
+        # 0.35略大于0.2*sqrt(3)
+        u = array([x0 - 0.35, x0, x0 + 0.35])
+        v = array([y0 - 0.35, y0, y0 + 0.35])
+        U, V = meshgrid(u, v)
+        return self.terrain_map.get_high(U, V)
 
     # 生成地图
     def set_map_seed(self, sd=1):
@@ -177,168 +185,154 @@ class Env:
         random.seed(sd)
         minXY = 5 * PIXEL_METER
         maxXY = MAP_DIM * PIXEL_METER / 2 - 2 * PIXEL_METER
-        minVxy = 0.1
-        maxVxy = 0.3
-        minZ = 2
-        maxZ = 5
+        minVxy = 0.05
+        maxVxy = 0.2
         XY_theta = random.random() * 2 * pi
         XY = ((maxXY - minXY) * random.random() + minXY) * array([cos(XY_theta), sin(XY_theta)])
-        Z = (random.random() * (maxZ - minZ) + minZ) + self.terrain_map.get_high(XY[0], XY[1])
         v_theta = random.random() * 2 * pi
         v_xy = ((maxVxy - minVxy) * random.random() + minVxy) * array([cos(v_theta), sin(v_theta)])
+        vz = 0.07 * random.random() + 0.03
         q = random.rand(4)
         q /= linalg.norm(q)
         w = random.rand(3) * 2 - 1
         w_wheel = random.rand(3) * 2 - 1
-        self.state = concatenate([XY, array([Z]), v_xy, zeros(1), q, w, w_wheel])
-        flag, v0, normal, t_fly = self.hypothesisSim()
-        t_fly = 0
-        stop_bool = False
-        done_bool = False
-        while t_fly < MIN_FLY_TIME and not (stop_bool or done_bool):
-            self.collisionSim(flag, v0, normal)
-            self.t = 0
-            self.observe_state = self.state.copy()
-            self.observe_t = 0
-            stop_bool = self.energy() < MIN_ENERGY or linalg.norm(self.state[0:2]) > MAP_DIM*PIXEL_METER
-            done_bool = linalg.norm(self.state[0:2]) < DONE_R
-            flag, v0, normal, t_fly = self.hypothesisSim()
-
-        if done_bool or stop_bool:
-            return False, self.state[0:6], self.terrain_map.map_matrix
-        else:
-            return True, self.observe_state[0:6], self.terrain_map.map_matrix
+        Z = ndarray.max(self.baoluo(XY[0], XY[1])) + 0.35
+        self.state = concatenate([XY, array([Z]), v_xy, array([vz]), q, w, w_wheel])
+        self.state0 = self.state.copy()
+        self.t = 0
 
     # check:
     # step env接收agent的action后的状态转移
     # 输入action即碰前角速度与姿态，输出新的state，reward以及标志该次仿真是否达到目的地的done，是否速度过小导致停止的stop
-    # 先按假想的无控进行仿真，若探测器在空中时间小于MIN_FLY_TIME,按无控进行仿真
-    # ?探测器在空中角动量守恒，应该可以计算出与action对应的飞轮转速？
     def step(self, action):
-        t0 = self.observe_t
-        pre_state = self.observe_state.copy()
-        done_bool, flag, v0, normal = self.relocation(action)
-        t_fly = 0
-        stop_bool = False
-        done_bool = False
-        while t_fly < MIN_FLY_TIME and not (stop_bool or done_bool):
-            self.collisionSim(flag, v0, normal)
-            self.observe_state = self.state.copy()
-            self.observe_t = self.t
-            stop_bool = self.energy() < MIN_ENERGY or linalg.norm(self.state[0:2]) > MAP_DIM*PIXEL_METER
-            done_bool = linalg.norm(self.state[0:2]) < DONE_R
-            flag, v0, normal, t_fly = self.hypothesisSim()
-        reward_value = self.reward(done_bool, stop_bool, pre_state, t0)
-        return self.observe_state[0:6], self.terrain_map.map_matrix, reward_value, done_bool, stop_bool
+        pre_t = self.t
+        pre_state = self.state.copy()
+        self.state[6:13] = action.copy()
+        flag, v0, normal0 = self.hypothesisSim()
+        overtime, fall = self.collisionSim(flag, v0, normal0)
+
+        stop_bool = self.energy() < MIN_ENERGY or linalg.norm(self.state[3:5]) < 1e-2 or abs(self.state[5]) < 1e-2
+        over_map = linalg.norm(self.state[0:2]) > (MAP_DIM * PIXEL_METER)
+        over_speed = linalg.norm(self.state[3:5]) > 1 or linalg.norm(self.state[5]) > 0.3
+        done_bool = linalg.norm(self.state[0:2]) < DONE_R
+
+        reward_value = self.reward(done_bool, stop_bool, pre_state, pre_t, over_speed, over_map, overtime, fall)
+        done = done_bool or stop_bool or over_speed or overtime or over_map or fall
+        return self.observe_state(), self.terrain_map.map_matrix, reward_value, done
 
     # check:
     # 碰撞仿真，直至所有顶点均与地面脱离
     # 更新t,state
-    def collisionSim(self, flag, v0, normal):
-        while flag.any():
-            self.t, self.state = RK4(self.terrain_map, self.t, self.state, STEP_LENGTH, flag, v0, normal)
+    def collisionSim(self, flag, v0, normal0):
+        t0 = self.t
+        overtime = False
+        fall = False
+        vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
+        while flag.any() and self.t - t0 < 10:
+            pre_t, pre_state = self.t, self.state.copy()
+            self.t, self.state = RK4(self.terrain_map, self.t, self.state, STEP_LENGTH, flag, v0, normal0)
             vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
             slc1 = logical_and(flag, vertex_high > 0)
             flag[slc1] = False
-            slc2 = logical_and(logical_not(flag), vertex_high <= 0)
-            flag[slc2] = True
-            normal[:, slc2] = self.terrain_map.get_normal(vertex_s[0, slc2], vertex_s[1, slc2])
-            v0[slc2] = -sum(vertex_v[:, slc2] * normal[:, slc2], 0)
+            v0[slc1] = 0
+            normal0[0:2, slc1] = 0
+            normal0[2, slc1] = 1
+            slc2 = logical_and(logical_not(flag), vertex_high < 0)
+            if slc2.any():
+                flag[slc2] = True
+                self.t, self.state = pre_t, pre_state.copy()
+                vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
+                normal0[:, slc2] = self.terrain_map.get_normal(vertex_s[0, slc2], vertex_s[1, slc2])
+                v0[slc2] = -sum(vertex_v[:, slc2] * normal0[:, slc2], 0)
+        while (vertex_high > 0).all() and (self.state[2] - self.baoluo(self.state[0], self.state[1]) < 0.35).any:
+            self.state[0:2] += self.state[3:5] * 1
+            self.state[2] += self.state[5] * 1 + 0.5 * g[2] * 1 ** 2
+            self.state[5] += g[2] * 1
+            self.t += 1
+            vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
+        if self.t - t0 >= 50:
+            overtime = True
+        if (vertex_high < 0).any():
+            fall = True
+        return overtime, fall
 
     # check:
-    # 模拟无控仿真，直至有顶点与地面接触
     # 更新t,state，并返回进行碰撞仿真所需参数flag(碰撞标志),v0(碰撞点初始速度),normal(碰撞点初始法向量)
     # 额外返回这一段的仿真时长即探测器在空中的时间
     def hypothesisSim(self):
-        t0 = self.t
-        v0 = zeros(8)
-        last_t, last_state = self.t, self.state.copy()
         flag = ones(8) < 0
-        normal = ones([3, 8])
+        v_xy = self.state[3:5].copy()
         vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-        if (vertex_high <= 0).any():
-            raise Exception("Invalid hypothesisSim!")
-        # 先按0.1s的间隔仿真，找到碰撞的大致时间
-        while (vertex_high > 0).all():
-            last_t, last_state = self.t, self.state.copy()
-            self.t, self.state = RK4(self.terrain_map, self.t, self.state, STEP_LENGTH * 1000)
+        delta_t = 1
+        pre_t = self.t
+        pre_state = self.state.copy()
+        normal0 = self.terrain_map.get_normal(vertex_s[0, :], vertex_s[1, :])
+        v0 = -sum(vertex_v[:, :] * normal0[:, :], 0)
+        for i in range(4):
+            while (vertex_high > 0).all():
+                pre_t = self.t
+                pre_state = self.state.copy()
+                self.state[0:2] += v_xy*delta_t
+                self.state[2] += self.state[5]*delta_t + 0.5*g[2]*delta_t**2
+                self.state[5] += g[2]*delta_t
+                self.t += delta_t
+                vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
+                flag = vertex_high <= 0
+            delta_t /= 10
+            self.t = pre_t
+            self.state = pre_state.copy()
             vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-        # 再回到碰撞前，按0.001s的间隔仿真
-        self.t, self.state = last_t, last_state.copy()
-        vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-        while (vertex_high > 0).all():
-            self.t, self.state = RK4(self.terrain_map, self.t, self.state, STEP_LENGTH)
-            vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-        slc = vertex_high <= 0
-        flag[slc] = True
-        normal[:, slc] = self.terrain_map.get_normal(vertex_s[0, slc], vertex_s[1, slc])
-        v0[slc] = -sum(vertex_v[:, slc] * normal[:, slc], 0)
-        if (v0 < 0).any():
-            raise Exception("Invalid v0!")
-        return flag, v0, normal, self.t - t0
+        normal0[:, flag] = self.terrain_map.get_normal(vertex_s[0, flag], vertex_s[1, flag])
+        v0[flag] = -sum(vertex_v[:, flag] * normal0[:, flag], 0)
 
-    # check:
-    # 重定位，从虚拟的无控仿真得到的碰撞点定位到目标姿态下的碰撞点
-    # 更新t,state,done(按碰撞点是否在设定目标区域判断)
-    # 同hypothesisSim一样返回flag, v0, normal
-    # 探测器在空中角动量守恒，可以计算出与action对应的飞轮转速
-    def relocation(self, action):
-        XYZc, v, q, w, w_wheel = self.state[0:3], self.state[3:6], self.state[6:10], self.state[10:13], self.state[
-                                                                                                        13:16]
-        self.state[6:10], self.state[10:13] = action[0:4].copy(), action[4:7].copy()
-        self.state[13:16] = UJ_inv.dot(q_to_DCM(q).dot(q_to_DCM(q).T).dot(
-            dot(I_star, w) + U.dot(J_wheel).dot(w_wheel)) - I_star.dot(w))
-        vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-        while (vertex_high <= 0).any() and self.t > self.observe_t:
-            self.t -= STEP_LENGTH
-            self.state[0:3] -= STEP_LENGTH * self.state[3:6]
-            self.state[3:6] -= STEP_LENGTH * g
-            vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-        while (vertex_high <= 0).any():
-            self.state[6:10] = self.observe_state[6:10].copy()
-            self.t += STEP_LENGTH
-            self.state[0:3] += STEP_LENGTH * self.state[3:6]
-            self.state[3:6] += STEP_LENGTH * g
-            vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-        flag, v0, normal, t_fly = self.hypothesisSim()
-        done_bool = linalg.norm(self.state[0:2]) < 8
-        return done_bool, flag, v0, normal
+        return flag, v0, normal0
 
-    # 输出强化学习所需的输入，即【xyz，vxyz】,map_matrix
-    def observe(self):
-        return self.observe_state[0:6], self.terrain_map.map_matrix  # , self.map.local_map
+    # 输出强化学习的state
+    def observe_state(self):
+        o_s = self.state.copy()
+        o_s[0:2] /= (MAP_DIM * PIXEL_METER / 2)
+        o_s[0:2] = minimum(maximum(o_s[0:2], -1), 1 - 1e-3)
+        o_s[-3:] /= 10
+        o_s[10:13] /= 2
+        return o_s
 
-    def reward(self, done_bool, stop_bool, pre_state, t0):
+    def reward(self, done_bool, stop_bool, pre_state, pre_t, over_speed, over_map, overtime, fall):
+        def _cos_vec(a, b):
+            f = dot(a, b) / (linalg.norm(a) * linalg.norm(b))
+            return f
+
         if done_bool:
-            reward_value = 1
-        elif stop_bool:
-            reward_value = -1
+            reward_value = 10
+        elif over_map:
+            reward_value = -2.5
+        elif stop_bool or overtime or fall:
+            reward_value = (linalg.norm(self.state0[0:2]) - linalg.norm(self.state[0:2])) / \
+                           max(linalg.norm(self.state0[0:2]), linalg.norm(self.state[0:2]))
+        elif over_speed:
+            reward_value = -2
         else:
-            reward_value = 0.001 * (linalg.norm(pre_state[0:2]) - linalg.norm(self.observe_state[0:2])) - 0.0001*(self.observe_t-t0)
+            d = (linalg.norm(pre_state[0:2]) - linalg.norm(self.state[0:2])) / \
+                max(linalg.norm(pre_state[0:2]), linalg.norm(self.state[0:2]))
+            c_pre = _cos_vec(-pre_state[0:2], pre_state[3:5])
+            c = _cos_vec(-self.state[0:2], self.state[3:5])
+            v_xy = linalg.norm(self.state[3:5])
+            reward_value = (c - c_pre) + (v_xy * c - v_xy * sqrt(1 - c ** 2)) + d - 0.0001 * (self.t - pre_t)
         return reward_value
 
     def energy(self):
         v, w = self.state[3:6], self.state[10:13]
-        eg = 0.5*m*dot(v, v) + 0.5*reshape(w, [1, 3]).dot(I_star).dot(w)
+        eg = 0.5 * m * dot(v, v) + 0.5 * reshape(w, [1, 3]).dot(I_star).dot(w)
         return eg
-
-    def test_ZeroMap(self):
-        self.t = 0
-        self.state = array([0, 0, 5, 0.12, -0.08, 0, 1, 0, 0, 0, 0.2, -0.1, 0.15, -1.9, 1.5, -1.2])
-        self.terrain_map = TerrainMap(3, MAP_DIM, PIXEL_METER)
-        flag, v0, normal, t_fly = self.hypothesisSim()
-        self.collisionSim(flag, v0, normal)
-        print(self.t)
-        print(self.state)
 
 
 if __name__ == '__main__':
     env = Env()
-    sed = random.randint(1, 10000)
+    sed = 100
     env.set_map_seed(sed)
-    if env.set_state_seed(sed):
-        state_input, matrix_input, r, done, stop = env.step(array([1, 0, 0, 0, 1, -1, 0.5]))
-        vertex_s1, vertex_high1, vertex_v1 = vertex(env.terrain_map, env.observe_state)
-        print(state_input)
-        print(r)
+    for i in range(100):
+        env.set_state_seed(random.randint(0, 100000))
+        act = random.random_sample(7)
+        act[0:4] /= linalg.norm(act[0:4])
+        state_input, matrix_input, r, done = env.step(act)
+        print(state_input, r, done)
     # env.test_ZeroMap()
