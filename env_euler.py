@@ -190,6 +190,7 @@ class Env:
     # 设定初始状态，即探测器与地面的撞前状态
     # 暂时不设定难度，（根据初始xy坐标与原点（目标）的距离，分10个难度，默认为最高难度）
     def set_state_seed(self, sd=1):
+        self.state0_sd = sd
         random.seed(sd)
         minXY = 5 * PIXEL_METER
         maxXY = MAP_DIM * PIXEL_METER / 2 - 2 * PIXEL_METER
@@ -208,6 +209,7 @@ class Env:
         self.state = concatenate([XY, array([Z]), v_xy, array([vz]), q, w, w_wheel])
         self.state0 = self.state.copy()
         self.t = 0
+        return self.get_map_seed(), self.observe_state(), self.terrain_map.map_matrix, self.state[0:2]
 
     # check:
     # step env接收agent的action后的状态转移
@@ -216,19 +218,17 @@ class Env:
         pre_t = self.t
         pre_state = self.state.copy()
         self.state[6:13] = action.copy()
-        flag, v0, normal0, validated = self.hypothesisSim()
-        overtime = False
-        if validated:
-            overtime = self.collisionSim(flag, v0, normal0)
+        flag, v0, normal0 = self.hypothesisSim()
+        overtime = self.collisionSim(flag, v0, normal0)
 
         stop_bool = self.energy() < MIN_ENERGY or linalg.norm(self.state[3:5]) < 1e-2 or abs(self.state[5]) < 1e-2
         over_map = linalg.norm(self.state[0:2]) > (MAP_DIM * PIXEL_METER)
-        over_speed = linalg.norm(self.state[3:5]) > 1 or linalg.norm(self.state[5]) > 0.3
+        over_speed = linalg.norm(self.state[3:5]) > 1.5 or linalg.norm(self.state[5]) > 0.5
         done_bool = linalg.norm(self.state[0:2]) < DONE_R
 
-        reward_value = self.reward(done_bool, stop_bool, pre_state, pre_t, over_speed, over_map, overtime, validated)
-        done = done_bool or stop_bool or over_speed or overtime or over_map or not validated
-        return self.observe_state(), self.terrain_map.map_matrix, reward_value, done
+        reward_value = self.reward(done_bool, stop_bool, pre_state, pre_t, over_speed, over_map, overtime)
+        done = done_bool or stop_bool or over_speed or overtime or over_map
+        return self.observe_state(), self.state[0:2], reward_value, done
 
     # check:
     # 碰撞仿真，直至所有顶点均与地面脱离
@@ -236,43 +236,20 @@ class Env:
     def collisionSim(self, flag, v0, normal0):
         t0 = self.t
         overtime = False
-        vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-        while (self.state[2] - self.baoluo(self.state[0], self.state[1]) < 0.35).any and self.t - t0 < 50:
-            while flag.any() and self.t - t0 < 50:
-                self.t, self.state = Euler(self.terrain_map, self.t, self.state, STEP_LENGTH, flag, v0, normal0)
-                vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-                slc1 = logical_and(flag, vertex_high > 0)
-                flag[slc1] = False
-                v0[slc1] = 0
-                normal0[0:2, slc1] = 0
-                normal0[2, slc1] = 1
-                slc2 = logical_and(logical_not(flag), vertex_high < 0)
-                flag[slc2] = True
-                normal0[:, slc2] = self.terrain_map.get_normal(vertex_s[0, slc2], vertex_s[1, slc2])
-                v0[slc2] = -sum(vertex_v[:, slc2] * normal0[:, slc2], 0)
+        while (self.state[2] - self.baoluo(self.state[0], self.state[1]) < 0.35).any() and self.t - t0 < 50:
+            self.t, self.state = Euler(self.terrain_map, self.t, self.state, STEP_LENGTH * 10, flag, v0, normal0)
+            vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
+            slc1 = logical_and(flag, vertex_high > 0)
+            flag[slc1] = False
+            v0[slc1] = 0
+            normal0[0:2, slc1] = 0
+            normal0[2, slc1] = 1
+            slc2 = logical_and(logical_not(flag), vertex_high < 0)
+            flag[slc2] = True
+            normal0[:, slc2] = self.terrain_map.get_normal(vertex_s[0, slc2], vertex_s[1, slc2])
+            v0[slc2] = -sum(vertex_v[:, slc2] * normal0[:, slc2], 0)
 
-            delta_t = 1
-            pre_t = self.t
-            pre_state = self.state.copy()
-            for i in range(5):
-                while (vertex_high > 0).all() and (self.state[2] - self.baoluo(self.state[0], self.state[1]) <
-                                                   0.35).any and self.t - t0 < 50 and (vertex_high > 0).all():
-                    pre_t = self.t
-                    pre_state = self.state.copy()
-                    self.state[0:2] += self.state[3:5] * delta_t
-                    self.state[2] += self.state[5] * delta_t + 0.5 * g[2] * delta_t ** 2
-                    self.state[5] += g[2] * delta_t
-                    self.t += delta_t
-                    vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-                    flag = vertex_high <= 0
-                delta_t /= 10
-                self.t = pre_t
-                self.state = pre_state.copy()
-                vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
-            normal0[:, flag] = self.terrain_map.get_normal(vertex_s[0, flag], vertex_s[1, flag])
-            v0[flag] = -sum(vertex_v[:, flag] * normal0[:, flag], 0)
-
-        if self.t - t0 >= 50 or (vertex_high < 0).any():
+        if self.t - t0 >= 50:
             overtime = True
         return overtime
 
@@ -280,7 +257,6 @@ class Env:
     # 更新t,state，并返回进行碰撞仿真所需参数flag(碰撞标志),v0(碰撞点初始速度),normal(碰撞点初始法向量)
     # 额外返回这一段的仿真时长即探测器在空中的时间
     def hypothesisSim(self):
-        validated = True
         flag = ones(8) < 0
         v_xy = self.state[3:5].copy()
         vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
@@ -306,28 +282,23 @@ class Env:
             vertex_s, vertex_high, vertex_v = vertex(self.terrain_map, self.state)
         normal0[:, flag] = self.terrain_map.get_normal(vertex_s[0, flag], vertex_s[1, flag])
         v0[flag] = -sum(vertex_v[:, flag] * normal0[:, flag], 0)
-        if (v0[flag] < 0).any():
-            validated = False
-        return flag, v0, normal0, validated
+        return flag, v0, normal0
 
     # 输出强化学习的state
     def observe_state(self):
-        o_s = self.state.copy()
+        o_s = self.state[0:6].copy()
         o_s[0:2] /= (MAP_DIM * PIXEL_METER / 2)
-        o_s[0:2] = minimum(maximum(o_s[0:2], -1), 1 - 1e-3)
-        o_s[-3:] /= 10
-        o_s[10:13] /= 2
+        o_s[0:2] = minimum(maximum(o_s[0:2], -1), 1 - 1e-5)
+        o_s[2] /= 20
         return o_s
 
-    def reward(self, done_bool, stop_bool, pre_state, pre_t, over_speed, over_map, overtime, validated):
+    def reward(self, done_bool, stop_bool, pre_state, pre_t, over_speed, over_map, overtime):
         def _cos_vec(a, b):
             f = dot(a, b) / (linalg.norm(a) * linalg.norm(b))
             return f
 
         if done_bool:
             reward_value = 10
-        elif not validated:
-            reward_value = -3
         elif over_map:
             reward_value = -2.5
         elif stop_bool or overtime:
@@ -349,15 +320,31 @@ class Env:
         eg = 0.5 * m * dot(v, v) + 0.5 * reshape(w, [1, 3]).dot(I_star).dot(w)
         return eg
 
+    def get_local_map(self, loc):
+        return self.terrain_map.get_local_map(loc)
+
+    def get_map_seed(self):
+        return self.terrain_map.get_seed()
+
+    def get_state0_seed(self):
+        return self.state0_sd
+
 
 if __name__ == '__main__':
     env = Env()
     sed = 100
     env.set_map_seed(sed)
+    r, j = 0, 0
     for i in range(100):
-        env.set_state_seed(random.randint(0, 100000))
-        act = random.random_sample(7)
-        act[0:4] /= linalg.norm(act[0:4])
-        state_input, matrix_input, r, done = env.step(act)
-        print(state_input, r, done)
+        ep_r = 0
+        env.set_state_seed(random.randint(0, 10000))
+        for j in range(200):
+            env.set_state_seed(random.randint(0, 100000))
+            act = random.random_sample(7)
+            act[0:4] /= linalg.norm(act[0:4])
+            state_input, matrix_input, r, done = env.step(act)
+            if done:
+                break
+        print(ep_r, r, j+1)
+
     # env.test_ZeroMap()

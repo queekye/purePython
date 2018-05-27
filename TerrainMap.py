@@ -25,6 +25,7 @@ class TerrainMap:
     def __init__(self, sd, map_dim, global_pixel_meter):
         # TerrianMap 构建高度图的对象
         random.seed(sd)
+        self.sd = sd
         self.map_dim = map_dim
         self.global_pixel_meter = global_pixel_meter
         self.num_peak = random.randint(MIN_PEAK, MAX_PEAK)
@@ -38,7 +39,7 @@ class TerrainMap:
         u = arange(global_pixel_meter / 2, side + global_pixel_meter / 2, global_pixel_meter) - side / 2
         v = u
         [U, V] = meshgrid(u, v)
-        self.map_matrix = self.get_high(U, V)
+        self.map_matrix = self.get_high(U, V) / 20
 
     def get_high(self, x, y):
         # get_high 求对应点的高度
@@ -79,7 +80,7 @@ class TerrainMap:
         gpm = self.global_pixel_meter
         index = asarray((loc + side / 2) / gpm, dtype=int)
         loc_m = zeros([self.map_dim, self.map_dim])
-        if (index >= 0).all():
+        if (index >= 0).all() and (index < self.map_dim).all():
             loc_m[index[0], index[1]] = 1
         return loc_m
 
@@ -94,6 +95,9 @@ class TerrainMap:
         Z = self.get_high(U, V)
         ax.plot_surface(U, V, Z, rstride=1, cstride=1, cmap=plt.get_cmap('rainbow'))
         plt.show()
+
+    def get_seed(self):
+        return self.sd
 
 
 if __name__ == '__main__':
